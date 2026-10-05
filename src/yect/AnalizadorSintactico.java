@@ -3,8 +3,6 @@ package yect;
 import java.util.ArrayList;
 import java.util.HashMap;
 
-// este es el analizador sintactico
-// su trabajo es revisar que los tokens esten en un orden correcto
 public class AnalizadorSintactico {
 
     private ArrayList<Token> tokens;
@@ -20,7 +18,6 @@ public class AnalizadorSintactico {
         exitoso = false;
     }
 
-    // metodo principal
     public void analizar(ArrayList<Token> listaTokens) {
         errores.clear();
         tablaSimbolos.clear();
@@ -54,7 +51,6 @@ public class AnalizadorSintactico {
         }
     }
 
-    // revisa sentencias hasta encontrar el final del programa o '}'
     private void revisarBloque() {
         while (pos < tokens.size() && !actualEs("END") && !actualEs("RBRACE")) {
             String t = actual().getToken();
@@ -81,7 +77,6 @@ public class AnalizadorSintactico {
         }
     }
 
-    // revisa la declaracion de variables
     private void revisarDeclaracion() {
         int linea = actual().getLinea();
         String tipo = actual().getToken();
@@ -123,26 +118,22 @@ public class AnalizadorSintactico {
         avanzar();
     }
 
-    // revisa expresiones a la derecha del '=' soportando formulas y casteos
     private void revisarValorAsignado(String nombre, int linea) {
-        // 1. comprueba si inicia con un casteo explicito como (ct_int)
         if (esInicioCasteo()) {
-            avanzar(); // pasa '('
-            avanzar(); // pasa el tipo de dato
+            avanzar();
+            avanzar();
             if (actualEs("RPAREN")) {
-                avanzar(); // pasa ')'
+                avanzar();
             } else {
                 agregarError("falta ')' en el casteo explicito", linea, 0);
             }
         }
 
-        // 2. recorre todos los elementos de la expresion hasta encontrar ';'
         int contadorParentesis = 0;
 
         while (pos < tokens.size() && !actualEs("SEMI") && !actualEs("END") && !actualEs("RBRACE")) {
             String tokenActual = actual().getToken();
 
-            // detecta si se puso otro signo '=' dentro de la misma asignacion
             if (tokenActual.equals("ASSIGN")) {
                 agregarError("no se permite otro '=' dentro de la asignacion de '" + nombre + "'", linea, actual().getColumna());
                 avanzar();
@@ -183,7 +174,6 @@ public class AnalizadorSintactico {
         }
     }
 
-    // verifica si los proximos tokens forman la estructura de un casteo: '(' + tipo + ')'
     private boolean esInicioCasteo() {
         return pos + 2 < tokens.size() &&
                tokens.get(pos).getToken().equals("LPAREN") &&
@@ -313,17 +303,28 @@ public class AnalizadorSintactico {
         if (!actualEs("LPAREN")) { agregarError("se esperaba '(' despues de 'ct_for'", linea, 0); return; }
         avanzar();
 
+        String tipoVarFor = "";
         if (esTipoDato(actual().getToken())) {
+            tipoVarFor = actual().getToken();
             avanzar();
         }
+
         if (actualEs("ID")) {
             String nombreVar = actual().getLexema();
-            if (!tablaSimbolos.containsKey(nombreVar)) {
+            if (!tipoVarFor.isEmpty()) {
+                tablaSimbolos.put(nombreVar, tipoVarFor);
+            } else if (!tablaSimbolos.containsKey(nombreVar)) {
                 tablaSimbolos.put(nombreVar, "INT");
             }
+            avanzar();
         }
-        saltarHasta("SEMI");
-        if (!actualEs("SEMI")) { agregarError("falta ';' en el inicio de 'ct_for'", linea, 0); return; }
+
+        if (actualEs("ASSIGN")) {
+            avanzar();
+            revisarValorAsignado("variable_for", linea);
+        }
+
+        if (!actualEs("SEMI")) { agregarError("falta ';' en la inicializacion de 'ct_for'", linea, 0); return; }
         avanzar();
 
         revisarCondicion(linea);

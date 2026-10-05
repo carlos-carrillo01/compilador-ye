@@ -28,24 +28,25 @@ public class AnalizadorSemantico {
             return;
         }
 
-        revisarVariables();
+        revisarEstructurasYVariables();
 
         if (errores.isEmpty()) {
             exitoso = true;
         }
     }
 
-    private void revisarVariables() {
+    private void revisarEstructurasYVariables() {
         HashSet<String> yaDeclaradas = new HashSet<>();
-        int indiceToken = 0;
+        int i = 0;
 
-        while (indiceToken < tokens.size()) {
-            Token tokenActual = tokens.get(indiceToken);
-            String nombreTokenActual = tokenActual.getToken();
+        while (i < tokens.size()) {
+            Token tokenActual = tokens.get(i);
+            String nombreToken = tokenActual.getToken();
 
-            // 1. declaracion de variables nuevas (ejemplo: ct_int edad = 20)
-            if (esTipoDato(nombreTokenActual)) {
-                int posNombre = indiceToken + 1;
+            // 1. Declaracion de variables
+            if (esTipoDato(nombreToken)) {
+                String tipoDeclarado = nombreToken;
+                int posNombre = i + 1;
 
                 if (posNombre < tokens.size() && tokens.get(posNombre).getToken().equals("ID")) {
                     String nombreVariable = tokens.get(posNombre).getLexema();
@@ -58,159 +59,185 @@ public class AnalizadorSemantico {
                         yaDeclaradas.add(nombreVariable);
                     }
 
+                    // Validar si la variable pertenece al encabezado de un ct_for
+                    boolean esVariableControlFor = (i > 0 && tokens.get(i - 1).getToken().equals("LPAREN")
+                            && i > 1 && tokens.get(i - 2).getToken().equals("FOR"));
+
+                    if (esVariableControlFor && (tipoDeclarado.equals("STRING") || tipoDeclarado.equals("BOOL"))) {
+                        errores.add(new ErrorCompilador(
+                                "la variable de control '" + nombreVariable + "' en 'ct_for' debe ser numerica (ct_int o ct_float)",
+                                tokenActual.getLinea(), tokenActual.getColumna(), "SEMANTICO"));
+                    }
+
                     int posAsignacion = posNombre + 1;
                     if (posAsignacion < tokens.size() && tokens.get(posAsignacion).getToken().equals("ASSIGN")) {
-                        int posValor = posAsignacion + 1;
-                        if (posValor < tokens.size()) {
-                            validarAsignacion(nombreTokenActual, nombreVariable, posValor);
-                        }
+                        validarAsignacion(tipoDeclarado, nombreVariable, posAsignacion + 1);
                     }
                 }
-                indiceToken++;
+                i++;
                 continue;
             }
 
-            // 2. reasignacion o uso de variables existentes
-            if (nombreTokenActual.equals("ID")) {
+            // 2. Reasignacion de variables (ID = ...)
+            if (nombreToken.equals("ID")) {
                 String nombreVariable = tokenActual.getLexema();
+                String tokenAnterior = (i > 0) ? tokens.get(i - 1).getToken() : "";
 
-                String tokenAnterior = (indiceToken > 0) ? tokens.get(indiceToken - 1).getToken() : "";
-                if (esTipoDato(tokenAnterior)) {
-                    indiceToken++;
-                    continue;
-                }
-
-                if (!tablaSimbolos.containsKey(nombreVariable)) {
-                    errores.add(new ErrorCompilador(
-                            "la variable '" + nombreVariable + "' se uso sin haber sido declarada",
-                            tokenActual.getLinea(), tokenActual.getColumna(), "SEMANTICO"));
-                    indiceToken++;
-                    continue;
-                }
-
-                int posAsignacion = indiceToken + 1;
-                if (posAsignacion < tokens.size() && tokens.get(posAsignacion).getToken().equals("ASSIGN")) {
-                    int posValor = posAsignacion + 1;
-                    if (posValor < tokens.size()) {
-                        String tipoDeclarado = tablaSimbolos.get(nombreVariable);
-                        validarAsignacion(tipoDeclarado, nombreVariable, posValor);
+                if (!esTipoDato(tokenAnterior)) {
+                    if (!tablaSimbolos.containsKey(nombreVariable)) {
+                        errores.add(new ErrorCompilador(
+                                "la variable '" + nombreVariable + "' se uso sin haber sido declarada",
+                                tokenActual.getLinea(), tokenActual.getColumna(), "SEMANTICO"));
+                    } else {
+                        int posAsignacion = i + 1;
+                        if (posAsignacion < tokens.size() && tokens.get(posAsignacion).getToken().equals("ASSIGN")) {
+                            String tipoVar = tablaSimbolos.get(nombreVariable);
+                            validarAsignacion(tipoVar, nombreVariable, posAsignacion + 1);
+                        }
                     }
                 }
             }
 
-            indiceToken++;
+            // 3. Validacion de expresiones condicionales (ye_if, ct_while, ct_for)
+            if (nombreToken.equals("IF") || nombreToken.equals("WHILE") || nombreToken.equals("FOR")) {
+                validarCondicionEstructura(i);
+            }
+
+            i++;
         }
     }
 
-    // evalua la expresion completa que esta a la derecha de '=' hasta el ';'
     private void validarAsignacion(String tipoEsperado, String nombreVariable, int posValor) {
-        // busca el final de la expresion
         int posFin = posValor;
-        while (posFin < tokens.size() && !tokens.get(posFin).getToken().equals("SEMI")) {
+        while (posFin < tokens.size() && !tokens.get(posFin).getToken().equals("SEMI")
+                && !tokens.get(posFin).getToken().equals("RPAREN")) {
             posFin++;
         }
 
-        // si hay un casteo explicito al inicio de la expresion: (tipo)
-        if (esCasteoExplicito(posValor)) {
-            String mensajeError = verificarCasteoExplicito(tipoEsperado, posValor);
-            if (mensajeError != null) {
-                Token tokenValor = tokens.get(posValor);
-                errores.add(new ErrorCompilador(mensajeError + " (variable '" + nombreVariable + "')",
-                        tokenValor.getLinea(), tokenValor.getColumna(), "SEMANTICO"));
+        for (int k = posValor; k < posFin; k++) {
+            Token t = tokens.get(k);
+            String tokType = t.getToken();
+
+            // Compatibilidad de tipos en literales
+            if (tipoEsperado.equals("STRING")) {
+                if (tokType.equals("NUM") || tokType.equals("FLOAT_LIT")) {
+                    errores.add(new ErrorCompilador(
+                            "no se puede asignar un numero a la variable '" + nombreVariable + "' de tipo ct_string",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                } else if (tokType.equals("TRUE") || tokType.equals("FALSE")) {
+                    errores.add(new ErrorCompilador(
+                            "no se puede asignar un valor booleano a la variable '" + nombreVariable + "' de tipo ct_string",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                }
+            } else if (tipoEsperado.equals("INT") || tipoEsperado.equals("FLOAT")) {
+                if (tokType.equals("STRING_LIT")) {
+                    errores.add(new ErrorCompilador(
+                            "no se puede asignar texto a la variable numerica '" + nombreVariable + "'",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                } else if (tokType.equals("TRUE") || tokType.equals("FALSE")) {
+                    errores.add(new ErrorCompilador(
+                            "no se puede asignar un valor booleano ('" + t.getLexema() + "') a la variable numerica '" + nombreVariable + "'",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                }
+            } else if (tipoEsperado.equals("BOOL")) {
+                if (tokType.equals("NUM") || tokType.equals("FLOAT_LIT") || tokType.equals("STRING_LIT")) {
+                    errores.add(new ErrorCompilador(
+                            "no se puede asignar un valor no booleano a la variable '" + nombreVariable + "' de tipo ct_bool",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                }
             }
-            return;
-        }
 
-        // recorre cada token de la expresion para verificar compatibilidad de tipos
-        boolean tieneOperadoresMatematicos = false;
+            // Uso de variables dentro de operaciones
+            if (tokType.equals("ID")) {
+                String varOrigen = t.getLexema();
+                String tipoOrigen = tablaSimbolos.get(varOrigen);
 
-        for (int i = posValor; i < posFin; i++) {
-            Token t = tokens.get(i);
-            String tokenNombre = t.getToken();
-
-            if (esOperadorAritmetico(tokenNombre)) {
-                tieneOperadoresMatematicos = true;
-            }
-
-            // revisa las variables que aparecen dentro de la expresion
-            if (tokenNombre.equals("ID")) {
-                String nombreVarOrigen = t.getLexema();
-                String tipoVarOrigen = tablaSimbolos.get(nombreVarOrigen);
-
-                if (tipoVarOrigen != null) {
-                    // si la variable destino es numerica (INT o FLOAT) o la formula tiene operadores matematicos,
-                    // no se permite usar variables de tipo STRING o BOOL
-                    if ((tipoEsperado.equals("INT") || tipoEsperado.equals("FLOAT") || tieneOperadoresMatematicos)
-                            && (tipoVarOrigen.equals("STRING") || tipoVarOrigen.equals("BOOL"))) {
-
+                if (tipoOrigen != null) {
+                    if ((tipoEsperado.equals("INT") || tipoEsperado.equals("FLOAT"))
+                            && (tipoOrigen.equals("STRING") || tipoOrigen.equals("BOOL"))) {
                         errores.add(new ErrorCompilador(
-                                "la variable '" + nombreVarOrigen + "' es de tipo " + tipoVarOrigen +
-                                " y no se puede usar en operaciones numericas para '" + nombreVariable + "' (" + tipoEsperado + ")",
+                                "la variable '" + varOrigen + "' es de tipo " + tipoOrigen + " y no se puede usar para la variable numerica '" + nombreVariable + "'",
                                 t.getLinea(), t.getColumna(), "SEMANTICO"));
                     }
                 }
             }
 
-            // revisa si se uso una literal de cadena ("texto") en una operacion numerica
-            if (tokenNombre.equals("STRING_LIT") && (tipoEsperado.equals("INT") || tipoEsperado.equals("FLOAT"))) {
-                errores.add(new ErrorCompilador(
-                        "no se puede usar una cadena de texto en un calculo numerico para '" + nombreVariable + "'",
-                        t.getLinea(), t.getColumna(), "SEMANTICO"));
+            // Operaciones aritmeticas no permitidas en variables de texto o booleanos
+            if (esOperadorAritmetico(tokType)) {
+                if (tipoEsperado.equals("STRING") || tipoEsperado.equals("BOOL")) {
+                    errores.add(new ErrorCompilador(
+                            "no se permiten operaciones aritmeticas en variables de tipo " + tipoEsperado + " ('" + nombreVariable + "')",
+                            t.getLinea(), t.getColumna(), "SEMANTICO"));
+                }
             }
         }
     }
 
-    private boolean esCasteoExplicito(int posValor) {
-        return posValor + 3 < tokens.size() &&
-               tokens.get(posValor).getToken().equals("LPAREN") &&
-               esTipoDato(tokens.get(posValor + 1).getToken()) &&
-               tokens.get(posValor + 2).getToken().equals("RPAREN");
-    }
+    private void validarCondicionEstructura(int posEstructura) {
+        int p = posEstructura + 1;
+        while (p < tokens.size() && !tokens.get(p).getToken().equals("LPAREN")) {
+            p++;
+        }
+        if (p >= tokens.size()) return;
 
-    private String verificarCasteoExplicito(String tipoEsperado, int posValor) {
-        String tipoCasteoDeseado = tokens.get(posValor + 1).getToken();
-        Token tokenValorOriginal = tokens.get(posValor + 3);
+        int pInicioCond = p + 1;
+        int pFinCond = pInicioCond;
+        int parentesisCount = 1;
 
-        String tipoOrigen = obtenerTipoToken(tokenValorOriginal);
-
-        if (tipoOrigen == null) {
-            return "la variable '" + tokenValorOriginal.getLexema() + "' no ha sido declarada";
+        while (pFinCond < tokens.size() && parentesisCount > 0) {
+            if (tokens.get(pFinCond).getToken().equals("LPAREN")) parentesisCount++;
+            if (tokens.get(pFinCond).getToken().equals("RPAREN")) parentesisCount--;
+            pFinCond++;
         }
 
-        boolean casteoValido = false;
-        if (tipoOrigen.equals("INT") && (tipoCasteoDeseado.equals("INT") || tipoCasteoDeseado.equals("FLOAT"))) casteoValido = true;
-        if (tipoOrigen.equals("FLOAT") && (tipoCasteoDeseado.equals("INT") || tipoCasteoDeseado.equals("FLOAT"))) casteoValido = true;
-        if (tipoOrigen.equals("STRING") && tipoCasteoDeseado.equals("STRING")) casteoValido = true;
-        if (tipoOrigen.equals("BOOL") && tipoCasteoDeseado.equals("BOOL")) casteoValido = true;
+        for (int k = pInicioCond; k < pFinCond - 1; k++) {
+            Token t = tokens.get(k);
+            String tokType = t.getToken();
 
-        if (!casteoValido) {
-            return "no se puede hacer casteo explicito de " + tipoOrigen + " a " + tipoCasteoDeseado;
+            if (esComparadorRelacional(tokType)) {
+                if (k > pInicioCond) {
+                    Token izq = tokens.get(k - 1);
+                    validarOperandoRelacional(izq, t.getLexema());
+                }
+                if (k + 1 < pFinCond) {
+                    Token der = tokens.get(k + 1);
+                    validarOperandoRelacional(der, t.getLexema());
+                }
+            }
         }
+    }
 
-        if (!tipoCasteoDeseado.equals(tipoEsperado) && !(tipoEsperado.equals("FLOAT") && tipoCasteoDeseado.equals("INT"))) {
-            return "el casteo resulta en " + tipoCasteoDeseado + " pero la variable es de tipo " + tipoEsperado;
+    private void validarOperandoRelacional(Token tokenOperando, String operador) {
+        String tokType = tokenOperando.getToken();
+
+        if (tokType.equals("TRUE") || tokType.equals("FALSE")) {
+            errores.add(new ErrorCompilador(
+                    "no se puede usar el valor booleano '" + tokenOperando.getLexema() + "' con el operador relacional '" + operador + "'",
+                    tokenOperando.getLinea(), tokenOperando.getColumna(), "SEMANTICO"));
+        } else if (tokType.equals("STRING_LIT")) {
+            errores.add(new ErrorCompilador(
+                    "no se puede usar el texto '" + tokenOperando.getLexema() + "' con el operador relacional '" + operador + "'",
+                    tokenOperando.getLinea(), tokenOperando.getColumna(), "SEMANTICO"));
+        } else if (tokType.equals("ID")) {
+            String tipoVar = tablaSimbolos.get(tokenOperando.getLexema());
+            if (tipoVar != null && (tipoVar.equals("STRING") || tipoVar.equals("BOOL"))) {
+                errores.add(new ErrorCompilador(
+                        "la variable '" + tokenOperando.getLexema() + "' de tipo " + tipoVar + " no se puede usar con el operador relacional '" + operador + "'",
+                        tokenOperando.getLinea(), tokenOperando.getColumna(), "SEMANTICO"));
+            }
         }
-
-        return null;
     }
 
-    private String obtenerTipoToken(Token tokenEvaluado) {
-        String nombreToken = tokenEvaluado.getToken();
-        if (nombreToken.equals("NUM")) return "INT";
-        if (nombreToken.equals("FLOAT_LIT")) return "FLOAT";
-        if (nombreToken.equals("STRING_LIT")) return "STRING";
-        if (nombreToken.equals("TRUE") || nombreToken.equals("FALSE")) return "BOOL";
-        if (nombreToken.equals("ID")) return tablaSimbolos.get(tokenEvaluado.getLexema());
-        return null;
+    private boolean esTipoDato(String tok) {
+        return tok.equals("INT") || tok.equals("FLOAT") || tok.equals("STRING") || tok.equals("BOOL");
     }
 
-    private boolean esTipoDato(String nombreToken) {
-        return nombreToken.equals("INT") || nombreToken.equals("FLOAT") || nombreToken.equals("STRING") || nombreToken.equals("BOOL");
+    private boolean esOperadorAritmetico(String tok) {
+        return tok.equals("PLUS") || tok.equals("MINUS") || tok.equals("MULT") || tok.equals("DIV") || tok.equals("MOD");
     }
 
-    private boolean esOperadorAritmetico(String nombreToken) {
-        return nombreToken.equals("PLUS") || nombreToken.equals("MINUS") || nombreToken.equals("MULT")
-                || nombreToken.equals("DIV") || nombreToken.equals("MOD");
+    private boolean esComparadorRelacional(String tok) {
+        return tok.equals("GT") || tok.equals("GTE") || tok.equals("LT") || tok.equals("LTE");
     }
 
     public ArrayList<ErrorCompilador> getErrores() {
