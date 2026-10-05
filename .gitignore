@@ -1,0 +1,8 @@
+# Carpetas de compilacion y salida (NUNCA deben subirse)
+build/
+out/
+dist/
+
+# Configuraciones de IntelliJ/IDE secundarios
+.idea/
+*.iml

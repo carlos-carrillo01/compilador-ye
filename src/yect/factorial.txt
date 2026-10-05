@@ -1,0 +1,17 @@
+ye_init 
+	ct_int numero = 5;
+        ct_int numero1 = 1;
+        ct_float numero2 = 2.67;
+	ct_int factorial = 1;
+
+        ct_int suma = numero1 * numero2;
+        ye_print suma; 
+	
+	
+	ct_for(ct_int i = 1; i <= numero; i = i + 1){
+	
+		factorial = factorial * i;
+		
+		ye_print factorial;
+	}
+kanye_end
