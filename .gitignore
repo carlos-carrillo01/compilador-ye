@@ -6,3 +6,4 @@ dist/
 # Configuraciones de IntelliJ/IDE secundarios
 .idea/
 *.iml
+nbproject/private/
