@@ -56,7 +56,7 @@ public class VentanaPrincipal extends JFrame {
 
     // arma toda la interfaz
     private void construirVentana() {
-        setTitle("Analizador ye/ct");
+        setTitle("Analizador YE");
         setSize(1000, 650);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLocationRelativeTo(null);
@@ -75,7 +75,7 @@ public class VentanaPrincipal extends JFrame {
         panel.setBackground(Color.WHITE);
         panel.setBorder(BorderFactory.createEmptyBorder(10, 10, 0, 10));
 
-        JLabel titulo = new JLabel("Analiszador ye/ct");
+        JLabel titulo = new JLabel("Analizador YE");
         titulo.setFont(new Font("Monospaced", Font.BOLD, 20));
         titulo.setForeground(Color.BLACK);
 
