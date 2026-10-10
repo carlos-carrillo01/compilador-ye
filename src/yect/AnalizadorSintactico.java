@@ -18,6 +18,8 @@ public class AnalizadorSintactico {
         exitoso = false;
     }
 
+    // Punto de entrada: valida que el programa vaya entre ye_init y kanye_end
+    // y deja la tabla de simbolos lista para el analizador semantico.
     public void analizar(ArrayList<Token> listaTokens) {
         errores.clear();
         tablaSimbolos.clear();
@@ -51,11 +53,12 @@ public class AnalizadorSintactico {
         }
     }
 
+    // Revisa una sentencia tras otra hasta encontrar el final del bloque actual.
     private void revisarBloque() {
         while (pos < tokens.size() && !actualEs("END") && !actualEs("RBRACE")) {
             String t = actual().getToken();
 
-            if (t.equals("INT") || t.equals("FLOAT") || t.equals("STRING") || t.equals("BOOL")) {
+            if (esTipoDato(t)) {
                 revisarDeclaracion();
             } else if (t.equals("ID")) {
                 revisarAsignacion();
@@ -77,6 +80,7 @@ public class AnalizadorSintactico {
         }
     }
 
+    // Declaracion: tipo [ [] ] nombre [ = valor ] ;  y guarda el tipo en la tabla de simbolos.
     private void revisarDeclaracion() {
         int linea = actual().getLinea();
         String tipo = actual().getToken();
@@ -118,21 +122,27 @@ public class AnalizadorSintactico {
         avanzar();
     }
 
+    // Revisa la forma de una expresion asignada. Los casteos se aceptan en cualquier
+    // posicion donde pueda ir un valor; si la conversion tiene sentido lo decide el semantico.
     private void revisarValorAsignado(String nombre, int linea) {
-        if (esInicioCasteo()) {
-            avanzar();
-            avanzar();
-            if (actualEs("RPAREN")) {
-                avanzar();
-            } else {
-                agregarError("falta ')' en el casteo explicito", linea, 0);
-            }
-        }
-
         int contadorParentesis = 0;
 
         while (pos < tokens.size() && !actualEs("SEMI") && !actualEs("END") && !actualEs("RBRACE")) {
             String tokenActual = actual().getToken();
+
+            if (esInicioCasteo()) {
+                consumirCasteo(linea);
+                continue;
+            }
+
+            // Se escribio '(' y un tipo pero no se cerro el parentesis del casteo.
+            if (esCasteoIncompleto()) {
+                agregarError("falta ')' en el casteo explicito", linea, actual().getColumna());
+                avanzar();
+                avanzar();
+                contadorParentesis++;
+                continue;
+            }
 
             if (tokenActual.equals("ASSIGN")) {
                 agregarError("no se permite otro '=' dentro de la asignacion de '" + nombre + "'", linea, actual().getColumna());
@@ -174,6 +184,7 @@ public class AnalizadorSintactico {
         }
     }
 
+    // Un casteo explicito tiene la forma: ( tipo ) y se mira sin consumir tokens.
     private boolean esInicioCasteo() {
         return pos + 2 < tokens.size() &&
                tokens.get(pos).getToken().equals("LPAREN") &&
@@ -181,6 +192,33 @@ public class AnalizadorSintactico {
                tokens.get(pos + 2).getToken().equals("RPAREN");
     }
 
+    // Parentesis de apertura seguido de un tipo pero sin el parentesis de cierre.
+    private boolean esCasteoIncompleto() {
+        return pos + 2 < tokens.size() &&
+               tokens.get(pos).getToken().equals("LPAREN") &&
+               esTipoDato(tokens.get(pos + 1).getToken()) &&
+               !tokens.get(pos + 2).getToken().equals("RPAREN");
+    }
+
+    // Consume los tres tokens del casteo y exige que despues venga un valor o un grupo '('.
+    private void consumirCasteo(int linea) {
+        avanzar();
+        avanzar();
+        avanzar();
+
+        if (!esValorValido(actual().getToken()) && !actualEs("LPAREN")) {
+            agregarError("se esperaba un valor despues del casteo", linea, actual().getColumna());
+        }
+    }
+
+    // Consume todos los casteos seguidos, por ejemplo (ct_string)(ct_int) x
+    private void omitirCasteos(int linea) {
+        while (esInicioCasteo()) {
+            consumirCasteo(linea);
+        }
+    }
+
+    // Consume un valor y, si trae indice de arreglo, tambien el indice.
     private void revisarValorConIndice() {
         avanzar();
         if (actualEs("LBRACKET")) {
@@ -190,6 +228,18 @@ public class AnalizadorSintactico {
         }
     }
 
+    // Revisa un operando (con casteos opcionales); devuelve false si falta el valor.
+    private boolean revisarOperando(int linea, String mensajeError) {
+        omitirCasteos(linea);
+        if (!esValorValido(actual().getToken())) {
+            agregarError(mensajeError, linea, 0);
+            return false;
+        }
+        revisarValorConIndice();
+        return true;
+    }
+
+    // Revisa: new tipo [ tamano ]
     private void revisarInicializacionArreglo(String nombre, int linea) {
         if (!actualEs("NEW")) {
             agregarError("se esperaba 'new' para crear el arreglo '" + nombre + "'", linea, 0);
@@ -227,6 +277,7 @@ public class AnalizadorSintactico {
         avanzar();
     }
 
+    // Asignacion: nombre [ [indice] ] = valor ;
     private void revisarAsignacion() {
         int linea = actual().getLinea();
         String nombre = actual().getLexema();
@@ -296,6 +347,7 @@ public class AnalizadorSintactico {
         }
     }
 
+    // ct_for ( [tipo] variable = valor ; condicion ; incremento ) { ... }
     private void revisarFor() {
         int linea = actual().getLinea();
         avanzar();
@@ -331,7 +383,8 @@ public class AnalizadorSintactico {
         if (!actualEs("SEMI")) { agregarError("falta ';' despues de la condicion de 'ct_for'", linea, 0); return; }
         avanzar();
 
-        saltarHasta("RPAREN");
+        // El incremento se salta completo; los parentesis internos (como los de un casteo) no cierran el for.
+        saltarHastaCierreParentesis();
         if (!actualEs("RPAREN")) { agregarError("falta ')' en 'ct_for'", linea, 0); return; }
         avanzar();
 
@@ -361,23 +414,20 @@ public class AnalizadorSintactico {
         avanzar();
     }
 
+    // ye_print valor [ operador valor ]... ;  (los valores pueden llevar casteo)
     private void revisarPrint() {
         int linea = actual().getLinea();
         avanzar();
 
-        if (!esValorValido(actual().getToken())) {
-            agregarError("'ye_print' necesita algo para imprimir", linea, 0);
+        if (!revisarOperando(linea, "'ye_print' necesita algo para imprimir")) {
             saltarHasta("SEMI");
         } else {
-            revisarValorConIndice();
             while (esOperadorAritmetico(actual().getToken())) {
                 avanzar();
-                if (!esValorValido(actual().getToken())) {
-                    agregarError("se esperaba un valor despues del operador en 'ye_print'", linea, 0);
+                if (!revisarOperando(linea, "se esperaba un valor despues del operador en 'ye_print'")) {
                     saltarHasta("SEMI");
                     break;
                 }
-                revisarValorConIndice();
             }
         }
 
@@ -399,36 +449,29 @@ public class AnalizadorSintactico {
         avanzar();
     }
 
+    // Condicion: operando [comparador operando] [(&& | ||) operando [comparador operando]]...
     private void revisarCondicion(int linea) {
-        if (!esValorValido(actual().getToken())) {
-            agregarError("se esperaba una condicion valida", linea, 0);
+        if (!revisarOperando(linea, "se esperaba una condicion valida")) {
             return;
         }
-        revisarValorConIndice();
 
         if (esComparador(actual().getToken())) {
             avanzar();
-            if (!esValorValido(actual().getToken())) {
-                agregarError("se esperaba un valor despues del comparador", linea, 0);
+            if (!revisarOperando(linea, "se esperaba un valor despues del comparador")) {
                 return;
             }
-            revisarValorConIndice();
         }
 
         while (actualEs("AND") || actualEs("OR")) {
             avanzar();
-            if (!esValorValido(actual().getToken())) {
-                agregarError("se esperaba un valor despues de '&&' u '||'", linea, 0);
+            if (!revisarOperando(linea, "se esperaba un valor despues de '&&' u '||'")) {
                 return;
             }
-            revisarValorConIndice();
             if (esComparador(actual().getToken())) {
                 avanzar();
-                if (!esValorValido(actual().getToken())) {
-                    agregarError("se esperaba un valor despues del comparador", linea, 0);
+                if (!revisarOperando(linea, "se esperaba un valor despues del comparador")) {
                     return;
                 }
-                revisarValorConIndice();
             }
         }
     }
@@ -437,6 +480,7 @@ public class AnalizadorSintactico {
         pos = pos + 1;
     }
 
+    // Token actual; si ya no hay tokens devuelve uno de fin de archivo.
     private Token actual() {
         if (pos < tokens.size()) {
             return tokens.get(pos);
@@ -472,8 +516,30 @@ public class AnalizadorSintactico {
                 || token.equals("GTE") || token.equals("LT") || token.equals("LTE");
     }
 
+    // Recuperacion de errores: avanza hasta el token buscado sin entrar a bloques con llaves.
     private void saltarHasta(String tipoBuscado) {
         while (pos < tokens.size() && !actualEs(tipoBuscado)) {
+            if (actualEs("LBRACE")) {
+                saltarBloqueLlaves();
+            } else {
+                avanzar();
+            }
+        }
+    }
+
+    // Avanza hasta el ')' que cierra el encabezado, ignorando los parentesis anidados.
+    private void saltarHastaCierreParentesis() {
+        int profundidad = 0;
+        while (pos < tokens.size()) {
+            if (actualEs("RPAREN") && profundidad == 0) {
+                break;
+            }
+            if (actualEs("LPAREN")) {
+                profundidad = profundidad + 1;
+            } else if (actualEs("RPAREN")) {
+                profundidad = profundidad - 1;
+            }
+
             if (actualEs("LBRACE")) {
                 saltarBloqueLlaves();
             } else {
